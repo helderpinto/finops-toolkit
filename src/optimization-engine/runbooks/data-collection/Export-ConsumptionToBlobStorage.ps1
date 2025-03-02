@@ -47,7 +47,7 @@ function Generate-CostDetails {
         [string] $ScopeName 
     )
 
-    $MaxTries = 20 # The typical Retry-After is set to 20 seconds. We'll give ~6 minutes overall to download the cost details report
+    $MaxTries = $consumptionDownloadMaxTries
     $hadErrors = $false
 
     $CostDetailsApiPath = "$ScopeId/providers/Microsoft.CostManagement/generateCostDetailsReport?api-version=2022-05-01"
@@ -318,6 +318,12 @@ $consumptionAPIOption = Get-AutomationVariable -Name  "AzureOptimization_Consump
 if ([string]::IsNullOrEmpty($consumptionAPIOption))
 {
     $consumptionAPIOption = "CostDetails"
+}
+
+$consumptionDownloadMaxTries = [int] (Get-AutomationVariable -Name  "AzureOptimization_ConsumptionDownloadMaxTries" -ErrorAction SilentlyContinue)
+if ($consumptionDownloadMaxTries -eq 0)
+{
+    $consumptionDownloadMaxTries = 50
 }
 
 $consumptionScope = Get-AutomationVariable -Name  "AzureOptimization_ConsumptionScope" -ErrorAction SilentlyContinue # Subscription|BillingAccount
