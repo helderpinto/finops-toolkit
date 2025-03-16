@@ -29,6 +29,12 @@ Reference to the optimization engine tables, runbooks, schedules and variables.
 | Runbook                                     | Description                      | Upstream dependencies            | Downstream dependencies          |
 | ------------------------------------------- | -------------------------------- | -------------------------------- | -------------------------------- |
 | `CleanUp-OlderRecommendationsFromSqlServer`       | Deletes older recommendations from the SQL Database (defaults to 365 days) | `AzureOptimization_RecommendationsMaxAgeInDays` variable and `AzureOptimization_CleanUpRecommendationsWeekly` schedule | |
+| `Export-AADObjectsToBlobStorage`       | Exports Entra ID objects as CSV to Blob Storage | `AzureOptimization_ExportAADObjectsDaily` schedule and `Global Reader` role in Entra ID tenant | `Identities and Roles` workbook and `Recommend-AADExpiringCredentialsToBlobStorage` runbook |
+| `Export-AdvisorRecommendationsToBlobStorage`       | Exports all Advisor recommendations as CSV to Blob Storage | `AzureOptimization_ExportAdvisorWeekly` schedule and `Reader` role in subscription(s) | `Recommend-AdvisorAsIsToBlobStorage` and `Recommend-AdvisorCostAugmentedToBlobStorage` runbooks |
+| `Export-ARGAppGatewayPropertiesToBlobStorage`       | Exports Application Gateway properties as CSV to Blob Storage | `AzureOptimization_ExportARGDaily` schedule and `Reader` role in subscription(s) | `Recommend-UnusedAppGWsToBlobStorage` runbook and `Resources Inventory` workbook |
+| `Export-ARGAppServicePlanPropertiesToBlobStorage`       | Exports App Service Plan properties as CSV to Blob Storage | `AzureOptimization_ExportARGDaily` schedule and `Reader` role in subscription(s) | `Recommend-AppServiceOptimizationsToBlobStorage` runbook and `Resources Inventory` workbook |
+| `Export-ARGAvailabilitySetPropertiesToBlobStorage`       | Exports Availability Set properties as CSV to Blob Storage | `AzureOptimization_ExportARGDaily` schedule and `Reader` role in subscription(s) | `Recommend-VMsHighAvailabilityToBlobStorage` runbook |
+| `Export-ARGLoadBalancerPropertiesToBlobStorage`       | Exports Load Balancer properties as CSV to Blob Storage | `AzureOptimization_ExportARGDaily` schedule and `Reader` role in subscription(s) | `Recommend-UnusedLoadBalancersToBlobStorage` runbook and `Resources Inventory` workbook |
 
 All runbooks depend on one or more of the following variables, which do not have a default value and are specific to each deployment (see [Variables](#-variables) for more details):
 
@@ -43,7 +49,7 @@ All runbooks depend on one or more of the following variables, which do not have
 
 <br>
 
-## 🧿 Schedules
+## ⏰ Schedules
 
 | Schedule                                    | Frequency                        | Linked runbooks                  | Notes                            |
 | ------------------------------------------- | -------------------------------- | -------------------------------- | -------------------------------- |
