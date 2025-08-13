@@ -164,6 +164,8 @@ param virtualNetworkAddressPrefix string = '10.20.30.0/26'
 @description('Optional. Enable telemetry to track anonymous module usage trends, monitor for bugs, and improve future releases.')
 param enableDefaultTelemetry bool = true
 
+@description('Optional. Enable custom recommendations. Default: false.')
+param enableCustomRecommendations bool = false
 
 //==============================================================================
 // Variables
@@ -376,6 +378,7 @@ module dataFactoryResources 'dataFactory.bicep' = {
     dataExplorerId: safeDataExplorerId
     enableManagedExports: enableManagedExports
     enablePublicAccess: enablePublicAccess
+    enableCustomRecommendations: enableCustomRecommendations
 
     // TODO: Move to remoteHub.bicep
     keyVaultName: empty(remoteHubStorageKey) ? '' : remoteHub.outputs.keyVaultName

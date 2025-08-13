@@ -69,6 +69,9 @@ param enableManagedExports bool = true
 @description('Required. Enable public access.')
 param enablePublicAccess bool
 
+@description('Required. Enable custom recommendations.')
+param enableCustomRecommendations bool
+
 //------------------------------------------------------------------------------
 // Variables
 //------------------------------------------------------------------------------
@@ -564,6 +567,27 @@ resource linkedService_ftkRepo 'Microsoft.DataFactory/factories/linkedservices@2
   }
 }
 
+var armEndpointPropertyName = 'aadResourceId' // This is a workaround to avoid the warning about "ResourceId" in the property name
+resource linkedService_arm 'Microsoft.DataFactory/factories/linkedservices@2018-06-01' = if (enableCustomRecommendations) {
+  name: 'azurerm'
+  parent: dataFactory
+  properties: {
+    annotations: []
+    parameters: {}
+    type: 'RestService'
+    typeProperties: union(
+      {
+        url: environment().resourceManager
+        authenticationType: 'ManagedServiceIdentity'
+        enableServerCertificateValidation: true
+      },
+      { // When bicep sees "ResourceId" in the following property name, it raises a warning. The union and variable work around this to avoid the warning.
+        '${armEndpointPropertyName}': environment().resourceManager
+      }
+    )
+  }
+}
+
 //------------------------------------------------------------------------------
 // Datasets
 //------------------------------------------------------------------------------
@@ -836,6 +860,24 @@ resource dataset_ftkReleaseFile 'Microsoft.DataFactory/factories/datasets@2018-0
   }
 }
 
+resource dataset_resourcegraph 'Microsoft.DataFactory/factories/datasets@2018-06-01' = if (enableCustomRecommendations) {
+  name: 'resourceGraph'
+  parent: dataFactory
+  properties: {
+    annotations: []
+    parameters: {}
+    type: 'RestResource'
+    typeProperties: {
+      relativeUrl: '/providers/Microsoft.ResourceGraph/resources?api-version=2022-10-01'
+    }
+    linkedServiceName: {
+      parameters: {}
+      referenceName: linkedService_arm.name
+      type: 'LinkedServiceReference'
+    }
+  }
+}
+
 //------------------------------------------------------------------------------
 // Triggers
 //------------------------------------------------------------------------------
@@ -967,6 +1009,36 @@ resource trigger_MonthlySchedule 'Microsoft.DataFactory/factories/triggers@2018-
             19
           ]
         }
+      }
+    }
+  }
+}
+
+resource trigger_RecommendationsDailySchedule 'Microsoft.DataFactory/factories/triggers@2018-06-01' = if (enableCustomRecommendations) {
+  name: dailyTriggerName
+  parent: dataFactory
+  dependsOn: [
+    stopTriggers
+  ]
+  properties: {
+    pipelines: [
+      {
+        pipelineReference: {
+          referenceName: pipeline_ExecuteQueries.name
+          type: 'PipelineReference'
+        }
+        parameters: {
+          Recurrence: 'Daily'
+        }
+      }
+    ]
+    type: 'ScheduleTrigger'
+    typeProperties: {
+      recurrence: {
+        frequency: 'Hour'
+        interval: 24
+        startTime: '2023-01-01T01:01:00'
+        timeZone: azuretimezones.outputs.Timezone
       }
     }
   }
@@ -5193,6 +5265,759 @@ resource pipeline_ExecuteIngestionETL 'Microsoft.DataFactory/factories/pipelines
     annotations: [
       'New ingestion'
     ]
+  }
+}
+
+//------------------------------------------------------------------------------
+// queries export pipeline
+// Triggered by daily trigger
+//------------------------------------------------------------------------------
+@description('Queues the queries_ETL_ingestion pipeline to extract query results from multiple sources (e.g., Resource Graph)')
+resource pipeline_ExecuteQueries 'Microsoft.DataFactory/factories/pipelines@2018-06-01' = if (enableCustomRecommendations) {
+  name: 'queries_ExecuteETL'
+  parent: dataFactory
+  properties: {
+    activities: [
+      { // Load Queries
+        name: 'Load Queries'
+        type: 'Lookup'
+        dependsOn: []
+        policy: {
+          timeout: '0.00:10:00'
+          retry: 0
+          retryIntervalInSeconds: 30
+          secureOutput: false
+          secureInput: false
+        }
+        userProperties: []
+        typeProperties: {
+          source: {
+            type: 'JsonSource'
+            storeSettings: {
+              type: 'AzureBlobFSReadSettings'
+              recursive: true
+              wildcardFileName: '*.json'
+              enablePartitionDiscovery: false
+            }
+            formatSettings: {
+              type: 'JsonReadSettings'
+            }
+          }
+          dataset: {
+            referenceName: dataset_config.name
+            type: 'DatasetReference'
+            parameters: {
+              fileName: 'settings.json'
+              folderPath: '${configContainerName}/queries'
+            }
+          }
+          firstRowOnly: false
+        }
+      }
+      { // Set ingestion id
+        name: 'Set Ingestion Id'
+        type: 'SetVariable'
+        dependsOn: []
+        policy: {
+          secureOutput: false
+          secureInput: false
+        }
+        userProperties: []
+        typeProperties: {
+          variableName: 'ingestionId'
+          value: {
+            value: '@guid()'
+            type: 'Expression'
+          }
+        }
+      }
+      { // Iterate Files
+        name: 'Iterate Files'
+        type: 'ForEach'
+        dependsOn: [
+          {
+            activity: 'Load Queries'
+            dependencyConditions: [
+              'Succeeded'
+            ]
+          }
+          {
+            activity: 'Set Ingestion Id'
+            dependencyConditions: ['Succeeded']
+          }
+        ]
+        userProperties: []
+        typeProperties: {
+          items: {
+            value: '@activity(\'Load Queries\').output.value'
+            type: 'Expression'
+          }
+          batchCount: 2
+          isSequential: false
+          activities: [
+            { // Execute File Queries
+              name: 'Execute File Queries'
+              description: 'Execute the queries declared in the queries file.'
+              type: 'ExecutePipeline'
+              dependsOn: []
+              policy: {
+                secureInput: false
+              }
+              userProperties: []
+              typeProperties: {
+                pipeline: {
+                  referenceName: pipeline_ExecuteQueries_query.name
+                  type: 'PipelineReference'
+                }
+                waitOnCompletion: true
+                parameters: {
+                  ingestionId: {
+                    value: '@variables(\'ingestionId\')'
+                    type: 'Expression'
+                  }
+                  inputDataset: {
+                    value: '@item().queryEngine'
+                    type: 'Expression'
+                  }
+                  outputDataset: {
+                    value: '@item().dataset'
+                    type: 'Expression'
+                  }
+                  schemaFile: {
+                    value: '@concat(toLower(item().dataset), \'_\', item().version, \'.json\')'
+                    type: 'Expression'
+                  }
+                  queryScope: {
+                    value: '@item().scope'
+                    type: 'Expression'
+                  }
+                  query: {
+                    value: '@item().query'
+                    type: 'Expression'
+                  }
+                  queryVersion: {
+                    value: '@item().version'
+                    type: 'Expression'
+                  }
+                  querySource: {
+                    value: '@item().source'
+                    type: 'Expression'
+                  }
+                  queryProvider: {
+                    value: '@item().provider'
+                    type: 'Expression'
+                  }
+                  queryType: {
+                    value: '@item().type'
+                    type: 'Expression'
+                  }
+                }
+              }
+            }
+            { // Append Manifest Data
+              name: 'Append Manifest Data'
+              type: 'AppendVariable'
+              dependsOn: [
+                {
+                  activity: 'Execute File Queries'
+                  dependencyConditions: [
+                    'Succeeded'
+                  ]
+                }
+              ]
+              userProperties: [ ]
+              typeProperties: {
+                variableName: 'manifestPaths'
+                value: {
+                  value: '@concat(item().dataset, \'/\', item().scope)'
+                  type: 'Expression'
+                }
+              }
+            }
+          ]
+        }
+      }
+      { // Distinct Manifest Data
+        name: 'Distinct Manifest Data'
+        type: 'SetVariable'
+        dependsOn: [
+          {
+            activity: 'Iterate Files'
+            dependencyConditions: [
+              'Completed'
+            ]
+          }
+        ]
+        policy: {
+          secureInput: false
+          secureOutput: false
+        }
+        userProperties: [ ]
+        typeProperties: {
+          variableName: 'uniqueManifestPaths'
+          value: {
+            value: '@union(variables(\'manifestPaths\'), variables(\'manifestPaths\'))'
+            type: 'Expression'
+          }
+        }
+      }
+      { // Generate Manifest Blobs
+        name: 'Generate Manifest Blobs'
+        type: 'ForEach'
+        dependsOn: [
+          {
+            activity: 'Distinct Manifest Data'
+            dependencyConditions: [
+              'Succeeded'
+            ]
+          }
+        ]
+        userProperties: []
+        typeProperties: {
+          items: {
+            value: '@variables(\'uniqueManifestPaths\')'
+            type: 'Expression'
+          }
+          batchCount: 2
+          isSequential: false
+          activities: [
+            { // Create Manifest
+              name: 'Create Manifest'
+              description: 'Create a manifest file in the ingestion container to trigger ADX ingestion'
+              type: 'Copy'
+              dependsOn: []
+              policy: {
+                timeout: '0.12:00:00'
+                retry: 0
+                retryIntervalInSeconds: 30
+                secureInput: false
+                secureOutput: false
+              }
+              userProperties: []
+              typeProperties: {
+                source: {
+                  type: 'JsonSource'
+                  storeSettings: {
+                    type: 'AzureBlobFSReadSettings'
+                    recursive: true
+                    enablePartitionDiscovery: false
+                  }
+                  formatSettings: {
+                    type: 'JsonReadSettings'
+                  }
+                }
+                sink: {
+                  type: 'JsonSink'
+                  storeSettings: {
+                    type: 'AzureBlobFSWriteSettings'
+                  }
+                  formatSettings: {
+                    type: 'JsonWriteSettings'
+                  }
+                }
+                enableStaging: false
+              }
+              inputs: [
+                {
+                  referenceName: dataset_config.name
+                  type: 'DatasetReference'
+                  parameters: {
+                    fileName: 'manifest.json'
+                    folderPath: {
+                      value: configContainerName
+                      type: 'Expression'
+                    }
+                  }
+                }
+              ]
+              outputs: [
+                {
+                  referenceName: dataset_manifest.name
+                  type: 'DatasetReference'
+                  parameters: {
+                    fileName: 'manifest.json'
+                    folderPath: {
+                      value: '@concat(\'${ingestionContainerName}/\', split(item(),\'/\')[0], \'/\', utcNow(\'yyyy/MM/dd\'), \'/\', split(item(),\'/\')[1])'
+                      type: 'Expression'
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+    variables: {
+      ingestionId: {
+        type: 'String'
+      }
+      manifestPaths: {
+        type: 'Array'
+      }
+      uniqueManifestPaths: {
+        type: 'Array'
+      }
+    }
+    policy: {
+      elapsedTimeMetric: {}
+    }
+    annotations: []
+  }
+}
+
+//------------------------------------------------------------------------------
+// specific query export pipeline
+// Triggered by queries_ExecuteETL pipeline
+//------------------------------------------------------------------------------
+@description('Extracts query results from a specific source (e.g., Resource Graph)')
+resource pipeline_ExecuteQueries_query 'Microsoft.DataFactory/factories/pipelines@2018-06-01' = if (enableCustomRecommendations) {
+  name: 'queries_ETL_ingestion'
+  parent: dataFactory
+  properties: {
+    activities: [
+      { // Set blob timestamp
+        name: 'Set Blob Timestamp'
+        type: 'SetVariable'
+        dependsOn: []
+        policy: {
+          secureOutput: false
+          secureInput: false
+        }
+        userProperties: []
+        typeProperties: {
+          variableName: 'blobExportTimestamp'
+          value: {
+            value: '@concat(utcNow(\'yyyy\'),\'/\',utcNow(\'MM\'),\'/\',utcNow(\'dd\'),\'/\')'
+            type: 'Expression'
+          }
+        }
+      }
+      { // Set initial query error value
+        name: 'Set Query Error Value'
+        type: 'SetVariable'
+        dependsOn: []
+        policy: {
+          secureOutput: false
+          secureInput: false
+        }
+        userProperties: []
+        typeProperties: {
+          variableName: 'queryError'
+          value: {
+            value: '@string(\'\')'
+            type: 'Expression'
+          }
+        }
+      }
+      { // Set blob base path
+        name: 'Set Blob Base Path'
+        type: 'SetVariable'
+        dependsOn: [
+          {
+            activity: 'Set Blob Timestamp'
+            dependencyConditions: ['Succeeded']
+          }
+        ]
+        policy: {
+          secureOutput: false
+          secureInput: false
+        }
+        userProperties: []
+        typeProperties: {
+          variableName: 'blobBasePath'
+          value: {
+            value: '@concat(pipeline().parameters.outputDataset, \'/\', variables(\'blobExportTimestamp\'), pipeline().parameters.queryScope, \'/\', pipeline().parameters.ingestionId, \'${ingestionIdFileNameSeparator}\')'
+            type: 'Expression'
+          }
+        }
+      }
+      { // Get Existing Parquet Files
+        name: 'Get Existing Parquet Files'
+        description: 'Get the previously ingested files so we can remove any older data. This is necessary to avoid data duplication in reports.'
+        type: 'GetMetadata'
+        dependsOn: [
+          {
+            activity: 'Set Blob Timestamp'
+            dependencyConditions: ['Succeeded']
+          }
+        ]
+        policy: {
+          timeout: '0.12:00:00'
+          retry: 0
+          retryIntervalInSeconds: 30
+          secureOutput: false
+          secureInput: false
+        }
+        userProperties: []
+        typeProperties: {
+          dataset: {
+            referenceName: dataset_ingestion_files.name
+            type: 'DatasetReference'
+            parameters: {
+              folderPath: '@concat(pipeline().parameters.outputDataset, \'/\', variables(\'blobExportTimestamp\'), pipeline().parameters.queryScope)'
+            }
+          }
+          fieldList: [
+            'childItems'
+          ]
+          storeSettings: {
+            type: 'AzureBlobFSReadSettings'
+            enablePartitionDiscovery: false
+          }
+          formatSettings: {
+            type: 'ParquetReadSettings'
+          }
+        }
+      }
+      { // Filter Out Current Exports
+        name: 'Filter Out Current Exports'
+        description: 'Remove existing files from the current export so those files do not get deleted.'
+        type: 'Filter'
+        dependsOn: [
+          {
+            activity: 'Get Existing Parquet Files'
+            dependencyConditions: [
+              'Completed'
+            ]
+          }
+        ]
+        userProperties: []
+        typeProperties: {
+          items: {
+            value: '@if(contains(activity(\'Get Existing Parquet Files\').output, \'childItems\'), activity(\'Get Existing Parquet Files\').output.childItems, json(\'[]\'))'
+            type: 'Expression'
+          }
+          condition: {
+            // cSpell:ignore endswith
+            value: '@and(endswith(item().name, concat(pipeline().parameters.queryType, \'.parquet\')), not(startswith(item().name, concat(pipeline().parameters.ingestionId, \'${ingestionIdFileNameSeparator}\'))))'
+            type: 'Expression'
+          }
+        }
+      }
+      { // For Each Old File
+        name: 'For Each Old File'
+        description: 'Loop thru each of the existing files from previous exports.'
+        type: 'ForEach'
+        dependsOn: [
+          {
+            activity: 'Filter Out Current Exports'
+            dependencyConditions: [
+              'Succeeded'
+            ]
+          }
+        ]
+        userProperties: []
+        typeProperties: {
+          items: {
+            value: '@activity(\'Filter Out Current Exports\').output.Value'
+            type: 'Expression'
+          }
+          activities: [
+            { // Delete Old Ingested File
+              name: 'Delete Old Ingested File'
+              description: 'Delete the previously ingested files from older exports.'
+              type: 'Delete'
+              dependsOn: []
+              policy: {
+                timeout: '0.12:00:00'
+                retry: 0
+                retryIntervalInSeconds: 30
+                secureOutput: false
+                secureInput: false
+              }
+              userProperties: []
+              typeProperties: {
+                dataset: {
+                  referenceName: dataset_ingestion.name
+                  type: 'DatasetReference'
+                  parameters: {
+                    blobPath: {
+                      value: '@concat(pipeline().parameters.outputDataset, \'/\', variables(\'blobExportTimestamp\'), pipeline().parameters.queryScope, \'/\', item().name)'
+                      type: 'Expression'
+                    }
+                  }
+                }
+                enableLogging: false
+                storeSettings: {
+                  type: 'AzureBlobFSReadSettings'
+                  recursive: false
+                  enablePartitionDiscovery: false
+                }
+              }
+            }
+          ]
+        }
+      }
+      { // Load Schema Mappings
+        name: 'Load Schema Mappings'
+        type: 'Lookup'
+        dependsOn: []
+        policy: {
+          timeout: '0.12:00:00'
+          retry: 0
+          retryIntervalInSeconds: 30
+          secureOutput: false
+          secureInput: false
+        }
+        userProperties: []
+        typeProperties: {
+          source: {
+            type: 'JsonSource'
+            storeSettings: {
+              type: 'AzureBlobFSReadSettings'
+              recursive: true
+              enablePartitionDiscovery: false
+            }
+            formatSettings: {
+              type: 'JsonReadSettings'
+            }
+          }
+          dataset: {
+            referenceName: dataset_config.name
+            type: 'DatasetReference'
+            parameters: {
+              fileName: {
+                value: '@pipeline().parameters.schemaFile'
+                type: 'Expression'
+              }
+              folderPath: '${configContainerName}/schemas'
+            }
+          }
+        }
+      }
+      { // Error: SchemaLoadFailed
+        name: 'Failed to Load Schema'
+        type: 'Fail'
+        dependsOn: [
+          {
+            activity: 'Load Schema Mappings'
+            dependencyConditions: ['Failed']
+          }
+        ]
+        userProperties: []
+        typeProperties: {
+          message: {
+            value: '@concat(\'Unable to load the \', pipeline().parameters.schemaFile, \' queries schema file. Please confirm the schema and version are supported for FinOps hubs ingestion. Unsupported files will remain in the ingestion container.\')'
+            type: 'Expression'
+          }
+          errorCode: 'SchemaLoadFailed'
+        }
+      }
+      { // Switch Query Type
+        type: 'Switch'
+        name: 'Switch Query Type'
+        dependsOn: [
+          {
+            activity: 'Set Blob Base Path'
+            dependencyConditions: ['Succeeded']
+          }
+          {
+            activity: 'Load Schema Mappings'
+            dependencyConditions: ['Succeeded']
+          }
+          {
+            activity: 'Set Query Error Value'
+            dependencyConditions: ['Succeeded']
+          }
+          {
+            activity: 'For Each Old File'
+            dependencyConditions: ['Completed']
+          }
+        ]
+        userProperties: []
+        typeProperties: {
+          on: {
+            value: '@pipeline().parameters.inputDataset'
+            type: 'Expression'
+          }
+          cases: [
+            {
+              value: dataset_resourcegraph.name
+              activities: [
+                { // Execute ARG Query
+                  name: 'Execute ARG Query'
+                  type: 'Copy'
+                  dependsOn: []
+                  policy: {
+                    timeout: '0.00:10:00'
+                    retry: 0
+                    retryIntervalInSeconds: 60
+                    secureOutput: false
+                    secureInput: false
+                  }
+                  userProperties: []
+                  typeProperties: {
+                    source: {
+                      type: 'RestSource'
+                      httpRequestTimeout: '00:02:00'
+                      requestInterval: '00.00:00:00.050'
+                      requestMethod: 'POST'
+                      requestBody: {
+                        value: '@concat(\'{ "query": "\', pipeline().parameters.query, \' | extend x_SourceName=\\"\', pipeline().parameters.querySource, \'\\", x_SourceType=\\"\', pipeline().parameters.queryType, \'\\", x_SourceProvider=\\"\', pipeline().parameters.queryProvider, \'\\", x_SourceVersion=\\"\', pipeline().parameters.queryVersion, \'\\"" }\')'
+                        type: 'Expression'
+                      }
+                      additionalHeaders: {
+                        'Content-Type': 'application/json'
+                      }
+                    }
+                    sink: {
+                      type: 'ParquetSink'
+                      storeSettings: {
+                        type: 'AzureBlobFSWriteSettings'
+                      }
+                      formatSettings: {
+                        type: 'ParquetWriteSettings'
+                        fileExtension: '.parquet'
+                      }
+                    }
+                    enableStaging: false
+                    translator: {
+                      value: '@activity(\'Load Schema Mappings\').output.firstRow.translator'
+                      type: 'Expression'
+                    }
+                  }
+                  inputs: [
+                    {
+                      referenceName: dataset_resourcegraph.name
+                      type: 'DatasetReference'
+                      parameters: {}
+                    }
+                  ]
+                  outputs: [
+                    {
+                      referenceName: dataset_ingestion.name
+                      type: 'DatasetReference'
+                      parameters: {
+                        blobPath: {
+                          value: '@concat(variables(\'blobBasePath\'), pipeline().parameters.queryType, \'.parquet\')'
+                          type: 'Expression'
+                        }
+                      }
+                    }
+                  ]
+                }
+                { // Set ARG Query Error
+                  name: 'Set ARG Query Error'
+                  type: 'SetVariable'
+                  dependsOn: [
+                    {
+                      activity: 'Execute ARG Query'
+                      dependencyConditions: ['Failed']
+                    }
+                  ]
+                  policy: {
+                    secureOutput: false
+                    secureInput: false
+                  }
+                  userProperties: []
+                  typeProperties: {
+                    variableName: 'queryError'
+                    value: {
+                      value: '@activity(\'Execute ARG Query\').output.errors[0].Message'
+                      type: 'Expression'
+                    }
+                  }
+                }
+              ]
+            }
+          ]
+          defaultActivities: [
+            {
+              type: 'Fail'
+              name: 'Unsupported input dataset'
+              userProperties: []
+              typeProperties: {
+                message: {
+                  value: '@concat(\'Unable to execute the specified query because the input data set is not supported. Dataset: \', pipeline().parameters.inputDataset)'
+                  type: 'Expression'
+                }
+                errorCode: 'UnsupportedInputDataset'
+              }
+            }
+          ]
+        }
+      }
+      { // Catch Query Failure
+        name: 'Catch Query Failure'
+        type: 'IfCondition'
+        dependsOn: [
+          {
+            activity: 'Switch Query Type'
+            dependencyConditions: ['Completed']
+          }
+        ]
+        userProperties: []
+        typeProperties: {
+          expression: {
+            value: '@and(not(empty(variables(\'queryError\'))), not(contains(variables(\'queryError\'), \'Sequence contains no elements\')))'
+            type: 'Expression'
+          }
+          ifTrueActivities: [
+            {
+              name: 'Fail Pipeline'
+              type: 'Fail'
+              dependsOn: []
+              userProperties: []
+              typeProperties: {
+                message: {
+                  value: '@concat(\'Pipeline failed due to a \', pipeline().parameters.inputDataset, \' query error. Error: \', variables(\'queryError\'))'
+                  type: 'Expression'
+                }
+                errorCode: 'QueryFailed'
+              }
+            }
+          ]
+        }
+      }
+    ]
+    policy: {
+      elapsedTimeMetric: {}
+    }
+    variables: {
+      blobExportTimestamp: {
+        type: 'String'
+      }
+      blobBasePath: {
+        type: 'String'
+      }
+      queryError: {
+        type: 'String'
+      }
+    }
+    parameters: {
+      ingestionId: {
+        type: 'String'
+      }
+      inputDataset: {
+        type: 'string'
+      }
+      outputDataset: {
+        type: 'string'
+      }
+      schemaFile: {
+        type: 'string'
+      }
+      queryScope: {
+        type: 'string'
+      }
+      query: {
+        type: 'string'
+      }
+      queryVersion: {
+        type: 'string'
+      }
+      querySource: {
+        type: 'string'
+      }
+      queryProvider: {
+        type: 'string'
+      }
+      queryType: {
+        type: 'string'
+      }
+    }
+    annotations: []
   }
 }
 
