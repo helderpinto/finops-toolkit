@@ -322,6 +322,20 @@ module cmExports 'cm-exports.bicep' = {
 }
 
 //------------------------------------------------------------------------------
+// Recommendations queries and schema
+//------------------------------------------------------------------------------
+
+module recommendations 'recommendations.bicep' = {
+  name: 'Microsoft.FinOpsHubs.Recommendations'
+  dependsOn: [
+    core
+  ]
+  params: {
+    hub: hub
+  }
+}
+
+//------------------------------------------------------------------------------
 // Data Explorer for analytics
 //------------------------------------------------------------------------------
 
