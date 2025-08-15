@@ -35,7 +35,7 @@ module appRegistration 'hub-app.bicep' = {
 
 // Upload schema and queries files
 module schemaFiles 'hub-storage.bicep' = {
-  name: 'Microsoft.FinOpsHubs.Recommendations_Storage.SchemaFiles'
+  name: 'Microsoft.FinOpsHubs.Recommendations_Storage.Files'
   params: {
     app: appRegistration.outputs.app
     container: 'config'

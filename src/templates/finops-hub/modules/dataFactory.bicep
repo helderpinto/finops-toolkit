@@ -1014,8 +1014,9 @@ resource trigger_MonthlySchedule 'Microsoft.DataFactory/factories/triggers@2018-
   }
 }
 
+var dailyRecommendationsTriggerName = '${safeConfigContainerName}_Recommendations_DailySchedule'
 resource trigger_RecommendationsDailySchedule 'Microsoft.DataFactory/factories/triggers@2018-06-01' = if (enableCustomRecommendations) {
-  name: dailyTriggerName
+  name: dailyRecommendationsTriggerName
   parent: dataFactory
   dependsOn: [
     stopTriggers

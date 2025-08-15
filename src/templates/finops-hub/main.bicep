@@ -150,6 +150,8 @@ param enablePublicAccess bool = true
 @description('Optional. Address space for the workload. Minimum /26 subnet size is required for the workload. Default: "10.20.30.0/26".')
 param virtualNetworkAddressPrefix string = '10.20.30.0/26'
 
+@description('Optional. Enable custom recommendations. Default: false.')
+param enableCustomRecommendations bool = false
 
 //==============================================================================
 // Resources
@@ -180,6 +182,7 @@ module hub 'modules/hub.bicep' = {
     remoteHubStorageKey: remoteHubStorageKey
     enablePublicAccess: enablePublicAccess
     virtualNetworkAddressPrefix: virtualNetworkAddressPrefix
+    enableCustomRecommendations: enableCustomRecommendations
   }
 }
 
