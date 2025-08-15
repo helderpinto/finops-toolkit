@@ -168,3 +168,10 @@ $text | Out-File $filePath
 # Upload new/updated settings
 Write-Output "Uploading settings.json file..."
 Set-AzStorageBlobContent @storageContext -File $filePath -Force | Out-Null
+
+# Upload manifest.json placeholder (used to trigger ADX ingestion after the queries pipeline run)
+Write-Output "Uploading manifest.json file..."
+$manifestFileName = 'manifest.json'
+$manifestFilePath = Join-Path -Path . -ChildPath $manifestFileName
+"This is a manifest.json placeholder used to trigger ADX ingestion" | Out-File $manifestFilePath
+Set-AzStorageBlobContent @storageContext -File $manifestFilePath -Force | Out-Null
