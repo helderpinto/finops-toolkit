@@ -49,6 +49,12 @@ param ingestionQueries IngestionQueriesMetadata
 var queryFiles = {}
 // </generated-query-files>
 
+// Filter query files by recommendation toggles
+var filteredQueryFiles = filter(
+  items(queryFiles),
+  item => (!(enableAHBRecommendations && contains(item.key, 'AHB')) && !(enableSpotRecommendations && contains(item.key, 'Spot')))
+)
+
 // Load schema files
 var schemaFiles = {
   'recommendations_1.0': loadTextContent('schemas/recommendations_1.0.json')
@@ -82,7 +88,7 @@ module uploadQueries '../../fx/hub-storage.bicep' = {
   params: {
     app: app
     container: ingestionQueries.queries.container
-    files: reduce(items(queryFiles), {}, (acc, item) => union(acc, { '${ingestionQueries.queries.folder}/${item.key}.json': item.value }))
+    files: reduce(filteredQueryFiles, {}, (acc, item) => union(acc, { '${ingestionQueries.queries.folder}/${item.key}.json': item.value }))
   }
 }
 
